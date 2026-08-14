@@ -1,0 +1,60 @@
+# Neon + withOhm — Promote tip into main on merge
+# Copy to your app as .github/workflows/ohm-promote-on-merge.yml
+#
+# Secrets: OHM_API_KEY
+# Vars:    OHM_API_URL (optional, default https://api.withohm.dev)
+
+name: ohm-promote-on-merge
+
+on:
+  push:
+    branches: [main, master]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve merged PR → TREE_ID
+        id: tree
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          PR=$(gh api \
+            "repos/${{ github.repository }}/commits/${{ github.sha }}/pulls" \
+            --jq '.[0].number' 2>/dev/null || true)
+          if [ -z "$PR" ] || [ "$PR" = "null" ]; then
+            echo "No associated PR — skip promote"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+          echo "tree_id=pr-${PR}" >> "$GITHUB_OUTPUT"
+
+      - name: Promote Ohm tip into main
+        if: steps.tree.outputs.skip != 'true'
+        env:
+          OHM_API_KEY: ${{ secrets.OHM_API_KEY }}
+          OHM_API_URL: ${{ vars.OHM_API_URL }}
+          TREE_ID: ${{ steps.tree.outputs.tree_id }}
+        run: |
+          export OHM_API_URL="${OHM_API_URL:-https://api.withohm.dev}"
+          export OHM_BASE_URL="${OHM_API_URL%/}/v1"
+          SCRIPT=templates/neon-ohm-ci/scripts/ohm_tree.sh
+          if [ -f "$SCRIPT" ]; then
+            bash "$SCRIPT" promote "$TREE_ID" main
+          else
+            curl -sS -X POST \
+              "${OHM_BASE_URL}/cache/trees/${TREE_ID}/promote" \
+              -H "Authorization: Bearer ${OHM_API_KEY}" \
+              -H "Content-Type: application/json" \
+              -d '{}'
+            echo
+          fi

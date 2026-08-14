@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "ohm": {
+      "command": "python",
+      "args": ["-m", "ohm_mcp"],
+      "env": {
+        "OHM_BASE_URL": "https://api.withohm.dev/v1",
+        "OHM_API_KEY": "sk-at-REPLACE_ME",
+        "OHM_UPSTREAM_KEY": ""
+      }
+    }
+  }
+}
