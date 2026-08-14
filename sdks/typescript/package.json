@@ -1,6 +1,6 @@
 {
   "name": "@at-utility/sdk",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Drop-in OpenAI baseURL helpers for Ohm (api.withohm.dev)",
   "main": "src/index.ts",
   "types": "src/index.ts",
@@ -15,7 +15,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/demiurge1/at-utility.git",
+    "url": "https://github.com/iwasinnam2/withohm-open.git",
     "directory": "sdks/typescript"
   },
   "keywords": [

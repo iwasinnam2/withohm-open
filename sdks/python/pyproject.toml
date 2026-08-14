@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "at-utility-sdk"
-version = "0.1.0"
+version = "0.1.1"
 description = "Drop-in OpenAI base_url helpers for Ohm (api.withohm.dev)"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -15,7 +15,7 @@ dependencies = []
 [project.urls]
 Homepage = "https://withohm.dev"
 Documentation = "https://withohm.dev/docs"
-Repository = "https://github.com/demiurge1/at-utility"
+Repository = "https://github.com/iwasinnam2/withohm-open"
 
 [project.optional-dependencies]
 openai = ["openai>=1.40.0"]
