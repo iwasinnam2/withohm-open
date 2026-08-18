@@ -83,7 +83,12 @@ def _safe_error_body(text: str, status: int) -> str:
     return json.dumps({"error": snippet, "status": status})
 
 
-def _headers(upstream: str = "", ctx: Optional[Context] = None) -> dict[str, str]:
+SESSION_HEADER = "X-Ohm-Session"
+
+
+def _headers(
+    upstream: str = "", ctx: Optional[Context] = None, session_id: str = ""
+) -> dict[str, str]:
     _, key, env_up = _cfg(ctx)
     h = {
         "Authorization": f"Bearer {key}",
@@ -92,6 +97,8 @@ def _headers(upstream: str = "", ctx: Optional[Context] = None) -> dict[str, str
     up = upstream or env_up
     if up:
         h[UPSTREAM_HEADER] = up
+    if session_id:
+        h[SESSION_HEADER] = session_id
     return h
 
 
@@ -101,6 +108,7 @@ async def ohm_fetch_web(
     purpose: str = "public_web_retrieval",
     query: str = "",
     format: str = "markdown",
+    session_id: str = "",
     ctx: Optional[Context] = None,
 ) -> str:
     """
@@ -116,6 +124,8 @@ async def ohm_fetch_web(
       query: Optional focus question for the model summarizer.
       format: markdown (default) or json — json returns title/text/meta/json_ld
         structure injected as context.
+      session_id: Optional Black Box flight-recorder tag (same id passed to
+        ohm_chat/ohm_api_call); pull the aggregate later with ohm_session.
 
     Returns redacted markdown or JSON-shaped context (model summary when via chat).
     """
@@ -136,7 +146,9 @@ async def ohm_fetch_web(
         body["web_query"] = query
     async with httpx.AsyncClient(timeout=120.0) as client:
         res = await client.post(
-            f"{base}/chat/completions", headers=_headers(ctx=ctx), json=body
+            f"{base}/chat/completions",
+            headers=_headers(ctx=ctx, session_id=session_id),
+            json=body,
         )
         if res.status_code >= 400:
             return _safe_error_body(res.text, res.status_code)
@@ -224,6 +236,115 @@ async def ohm_receipt(display_name: str = "", ctx: Optional[Context] = None) -> 
 
 
 @mcp.tool()
+async def ohm_register_api_service(
+    name: str,
+    base_url: str,
+    allowed_path_prefix: str = "/",
+    auth_header_name: str = "Authorization",
+    purpose: str = "business_api_audit",
+    ctx: Optional[Context] = None,
+) -> str:
+    """
+    Register a named third-party API service for receipted audit-mode calls
+    (POST /v1/api_services). One-time setup before ohm_api_call.
+
+    Stores only the non-secret shape — base URL, allowed path prefix, and the
+    auth header *name* to inject. The credential itself is never sent here or
+    persisted; it travels per-call via ohm_api_call's service_key argument.
+
+    Args:
+      name: Short id for the service, e.g. "vehicle_data" ([a-z0-9_-]{1,64}).
+      base_url: Absolute http(s) base URL, e.g. "https://api.vendor.example".
+      allowed_path_prefix: Path prefix calls must stay under (default "/").
+      auth_header_name: Header name the service expects the key under
+        (e.g. "Authorization" or "X-Api-Key").
+      purpose: Ingest-style purpose label (default business_api_audit).
+    """
+    base, _, _ = _cfg(ctx)
+    body: dict[str, Any] = {
+        "name": name,
+        "base_url": base_url,
+        "allowed_path_prefix": allowed_path_prefix,
+        "auth_header_name": auth_header_name,
+        "purpose": purpose,
+    }
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        res = await client.post(
+            f"{base}/api_services", headers=_headers(ctx=ctx), json=body
+        )
+        if res.status_code >= 400:
+            return _safe_error_body(res.text, res.status_code)
+        return res.text
+
+
+@mcp.tool()
+async def ohm_api_services(ctx: Optional[Context] = None) -> str:
+    """List the tenant's registered third-party API services (GET /v1/api_services)."""
+    return await _get("/api_services", ctx)
+
+
+@mcp.tool()
+async def ohm_api_call(
+    service: str,
+    path: str,
+    query: Optional[dict[str, Any]] = None,
+    service_key: str = "",
+    purpose: str = "business_api_audit",
+    session_id: str = "",
+    ctx: Optional[Context] = None,
+) -> str:
+    """
+    Receipted, metered GET call to a registered third-party business API
+    (POST /v1/api_call). Phase A of docs/BLACK_BOX.md's audit-mode: gives an
+    agent's mid-session vendor/API calls the same receipted, metered
+    treatment as an LLM completion or a compliant web fetch.
+
+    Read-only (GET) and allowlisted-service only in this phase — register
+    the service first with ohm_register_api_service. The service credential
+    is BYOK-style: passed here, forwarded to the third party, never persisted.
+
+    Args:
+      service: Registered service name (see ohm_api_services).
+      path: Path under the service's allowed_path_prefix, e.g. "/v1/lookup".
+      query: Optional query-string parameters.
+      service_key: Third-party API credential (env OHM_SERVICE_KEY fallback).
+      purpose: Ingest-style purpose label (default business_api_audit).
+      session_id: Optional Black Box flight-recorder tag (same id passed to
+        ohm_chat/ohm_fetch_web); pull the aggregate later with ohm_session.
+    """
+    base, _, _ = _cfg(ctx)
+    key = service_key or os.environ.get("OHM_SERVICE_KEY", "")
+    headers = _headers(ctx=ctx, session_id=session_id)
+    if key:
+        headers["X-Ohm-Service-Key"] = key
+    body: dict[str, Any] = {"service": service, "path": path, "purpose": purpose}
+    if query:
+        body["query"] = query
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        res = await client.post(f"{base}/api_call", headers=headers, json=body)
+        if res.status_code >= 400:
+            return _safe_error_body(res.text, res.status_code)
+        return res.text
+
+
+@mcp.tool()
+async def ohm_session(session_id: str, ctx: Optional[Context] = None) -> str:
+    """
+    Aggregated, signed flight-recorder receipt for one audit-mode session
+    (GET /v1/sessions/{session_id}, docs/BLACK_BOX.md Phase B).
+
+    Aggregates every chat completion and ohm_api_call tagged with the same
+    X-Ohm-Session id into one signed receipt: event count, total cost,
+    per-kind counts, first/last timestamps. Read-only — no new call made.
+
+    Args:
+      session_id: The same id passed as X-Ohm-Session on the calls that made
+        up this session.
+    """
+    return await _get(f"/sessions/{session_id}", ctx)
+
+
+@mcp.tool()
 async def ohm_providers(ctx: Optional[Context] = None) -> str:
     """Return upstream provider and failover status for the Ohm pipe (GET /v1/providers)."""
     return await _get("/providers", ctx)
@@ -242,6 +363,7 @@ async def ohm_chat(
     fetch_urls: Optional[list[str]] = None,
     purpose: str = "public_web_retrieval",
     upstream_api_key: str = "",
+    session_id: str = "",
     ctx: Optional[Context] = None,
 ) -> str:
     """
@@ -256,6 +378,10 @@ async def ohm_chat(
       fetch_urls: Optional public URLs to attach as compliant web context.
       purpose: Ingest purpose when fetch_urls is set.
       upstream_api_key: Optional BYOK override (else OHM_UPSTREAM_KEY).
+      session_id: Optional Black Box flight-recorder tag grouping this call
+        with other ohm_chat/ohm_fetch_web/ohm_api_call calls in the same
+        unattended agent session; pull the aggregate signed receipt later
+        with ohm_session(session_id).
     """
     base, _, _ = _cfg(ctx)
     body: dict[str, Any] = {
@@ -273,7 +399,7 @@ async def ohm_chat(
     async with httpx.AsyncClient(timeout=120.0) as client:
         res = await client.post(
             f"{base}/chat/completions",
-            headers=_headers(upstream_api_key, ctx=ctx),
+            headers=_headers(upstream_api_key, ctx=ctx, session_id=session_id),
             json=body,
         )
         if res.status_code >= 400:

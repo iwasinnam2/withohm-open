@@ -1,0 +1,3 @@
+[console_scripts]
+ohm-mcp = ohm_mcp:main
+ohm-mcp-http = ohm_mcp:main_http
